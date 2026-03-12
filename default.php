@@ -6,6 +6,7 @@
     <title>Welcome</title>
     <style>
         :root {
+            
             --ios-bg: #F2F2F7;
             --ios-card-bg: #FFFFFF;
             --ios-text: #000000;
