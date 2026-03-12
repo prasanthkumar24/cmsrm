@@ -1,0 +1,842 @@
+💻 PROGRAMMING LOGIC FOR PASTOR DASHBOARD
+SECTION 1: System Health Calculation
+javascript
+async function calculatePastorDashboardMetrics() {
+    try {
+        const metrics = {};
+        
+        // ============================================
+        // 1. SYSTEM HEALTH AT-A-GLANCE
+        // ============================================
+        
+        const systemHealth = await db.query(`
+            SELECT 
+                -- Active Volunteers
+                (SELECT COUNT(*) FROM volunteers WHERE status = 'Active') as active_volunteers,
+                
+                -- Active Team Leads
+                (SELECT COUNT(*) FROM team_leads WHERE status = 'Active') as active_team_leads,
+                
+                -- First-Time Visitors MTD
+                (SELECT COUNT(*) FROM people 
+                 WHERE visit_type = 'First-Time Visitor'
+                   AND DATE_FORMAT(first_visit_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as visitors_mtd,
+                
+                -- Follow-Ups Completed MTD
+                (SELECT COUNT(*) FROM follow_ups 
+                 WHERE contact_status = 'Contacted'
+                   AND DATE_FORMAT(attempt_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as followups_completed_mtd,
+                
+                -- System vNPS (average across all volunteers)
+                (SELECT AVG(vnps_score) FROM vnps_surveys 
+                 WHERE quarter = CONCAT('Q', QUARTER(CURDATE()))
+                   AND year = YEAR(CURDATE())
+                ) as system_vnps,
+                
+                -- Volunteer Retention (% of volunteers from 3 months ago still active)
+                (SELECT 
+                    (COUNT(CASE WHEN status = 'Active' THEN 1 END) * 100.0 / COUNT(*))
+                 FROM volunteers
+                 WHERE start_date <= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+                ) as volunteer_retention,
+                
+                -- Completion Rate MTD
+                (SELECT 
+                    (SUM(CASE WHEN contact_status = 'Contacted' THEN 1 ELSE 0 END) * 100.0 / COUNT(*))
+                 FROM follow_ups
+                 WHERE DATE_FORMAT(attempt_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as completion_rate_mtd,
+                
+                -- Average Response Time (days)
+                (SELECT AVG(TIMESTAMPDIFF(HOUR, p.assigned_date, f.attempt_date) / 24)
+                 FROM follow_ups f
+                 JOIN people p ON f.person_id = p.person_id
+                 WHERE f.attempt_number = 1
+                   AND DATE_FORMAT(f.attempt_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as avg_response_time_days
+        `);
+        
+        metrics.system_health = systemHealth[0];
+        
+        // Determine Overall System Health Flag
+        const vnps = metrics.system_health.system_vnps || 0;
+        const retention = metrics.system_health.volunteer_retention || 0;
+        const completion = metrics.system_health.completion_rate_mtd || 0;
+        
+        if (vnps >= 50 && retention >= 90 && completion >= 85) {
+            metrics.system_health.overall_flag = '🟢 HEALTHY';
+        } else if (vnps >= 40 && retention >= 85 && completion >= 80) {
+            metrics.system_health.overall_flag = '🟡 NEEDS ATTENTION';
+        } else {
+            metrics.system_health.overall_flag = '🔴 AT RISK';
+        }
+        
+        
+        // ============================================
+        // 2. KEY PERFORMANCE INDICATORS
+        // ============================================
+        
+        // Get previous month for comparison
+        const kpis = await db.query(`
+            SELECT 
+                -- Current Month Completion Rate
+                (SELECT 
+                    (SUM(CASE WHEN contact_status = 'Contacted' THEN 1 ELSE 0 END) * 100.0 / COUNT(*))
+                 FROM follow_ups
+                 WHERE DATE_FORMAT(attempt_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as completion_rate_current,
+                
+                -- Last Month Completion Rate
+                (SELECT 
+                    (SUM(CASE WHEN contact_status = 'Contacted' THEN 1 ELSE 0 END) * 100.0 / COUNT(*))
+                 FROM follow_ups
+                 WHERE DATE_FORMAT(attempt_date, '%Y-%m') = DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH), '%Y-%m')
+                ) as completion_rate_last,
+                
+                -- First Contact <48h Rate
+                (SELECT 
+                    (SUM(CASE WHEN TIMESTAMPDIFF(HOUR, p.assigned_date, f.attempt_date) <= 48 THEN 1 ELSE 0 END) * 100.0 / COUNT(*))
+                 FROM follow_ups f
+                 JOIN people p ON f.person_id = p.person_id
+                 WHERE f.attempt_number = 1
+                   AND DATE_FORMAT(f.attempt_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as first_contact_48h,
+                
+                -- Escalation Rate
+                (SELECT 
+                    (COUNT(*) * 100.0 / (SELECT COUNT(*) FROM follow_ups WHERE DATE_FORMAT(attempt_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')))
+                 FROM escalations
+                 WHERE DATE_FORMAT(escalation_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as escalation_rate,
+                
+                -- Crisis Handled Safely (100% target)
+                (SELECT 
+                    (SUM(CASE WHEN crisis_protocol_followed = TRUE THEN 1 ELSE 0 END) * 100.0 / COUNT(*))
+                 FROM escalations
+                 WHERE escalation_tier = 'Emergency'
+                   AND DATE_FORMAT(escalation_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as crisis_handled_safely
+        `);
+        
+        metrics.kpis = {
+            completion_rate: {
+                current: kpis[0].completion_rate_current || 0,
+                target: 85,
+                trend: (kpis[0].completion_rate_current || 0) - (kpis[0].completion_rate_last || 0),
+                status: (kpis[0].completion_rate_current || 0) >= 85 ? '🟢' : '🔴'
+            },
+            first_contact_48h: {
+                current: kpis[0].first_contact_48h || 0,
+                target: 90,
+                status: (kpis[0].first_contact_48h || 0) >= 90 ? '🟢' : '🔴'
+            },
+            escalation_rate: {
+                current: kpis[0].escalation_rate || 0,
+                target: 15, // Less than 15%
+                status: (kpis[0].escalation_rate || 0) < 15 ? '🟢' : '🔴'
+            },
+            crisis_handled_safely: {
+                current: kpis[0].crisis_handled_safely || 100,
+                target: 100,
+                status: (kpis[0].crisis_handled_safely || 0) === 100 ? '🟢' : '🔴'
+            },
+            volunteer_retention: {
+                current: metrics.system_health.volunteer_retention,
+                target: 90,
+                status: metrics.system_health.volunteer_retention >= 90 ? '🟢' : '🔴'
+            },
+            system_vnps: {
+                current: metrics.system_health.system_vnps,
+                target: 50,
+                status: metrics.system_health.system_vnps >= 50 ? '🟢' : '🔴'
+            }
+        };
+        
+        // Count how many KPIs are on target
+        const onTargetCount = Object.values(metrics.kpis).filter(kpi => kpi.status === '🟢').length;
+        metrics.kpis.on_target_count = onTargetCount;
+        metrics.kpis.total_count = Object.keys(metrics.kpis).length - 2; // Exclude counts themselves
+        
+        
+        // ============================================
+        // 3. TEAM LEAD PERFORMANCE COMPARISON
+        // ============================================
+        
+        const teamLeadPerformance = await db.query(`
+            SELECT 
+                tl.team_lead_id,
+                CONCAT(tl.first_name, ' ', tl.last_name) as team_lead_name,
+                tl.current_volunteers as team_size,
+                
+                -- Team Completion Rate
+                (SELECT 
+                    (SUM(CASE WHEN f.contact_status = 'Contacted' THEN 1 ELSE 0 END) * 100.0 / COUNT(*))
+                 FROM follow_ups f
+                 JOIN volunteers v ON f.volunteer_id = v.volunteer_id
+                 WHERE v.team_lead = tl.team_lead_id
+                   AND DATE_FORMAT(f.attempt_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as completion_rate,
+                
+                -- Team vNPS
+                (SELECT AVG(vn.vnps_score)
+                 FROM vnps_surveys vn
+                 JOIN volunteers v ON vn.volunteer_id = v.volunteer_id
+                 WHERE v.team_lead = tl.team_lead_id
+                   AND vn.quarter = CONCAT('Q', QUARTER(CURDATE()))
+                   AND vn.year = YEAR(CURDATE())
+                ) as team_vnps,
+                
+                -- Team Retention
+                (SELECT 
+                    (COUNT(CASE WHEN v.status = 'Active' THEN 1 END) * 100.0 / COUNT(*))
+                 FROM volunteers v
+                 WHERE v.team_lead = tl.team_lead_id
+                   AND v.start_date <= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+                ) as retention_rate
+                
+            FROM team_leads tl
+            WHERE tl.status = 'Active'
+            ORDER BY completion_rate DESC
+        `);
+        
+        // Flag each Team Lead
+        metrics.team_lead_performance = teamLeadPerformance.map(tl => {
+            const belowTargetCount = 
+                (tl.completion_rate < 85 ? 1 : 0) +
+                (tl.team_vnps < 50 ? 1 : 0) +
+                (tl.retention_rate < 90 ? 1 : 0);
+            
+            let flag = '🟢';
+            if (belowTargetCount >= 2) flag = '🔴';
+            else if (belowTargetCount === 1) flag = '🟡';
+            
+            return {
+                ...tl,
+                flag: flag,
+                below_target_count: belowTargetCount
+            };
+        });
+        
+        
+        // ============================================
+        // 4. VISITOR PIPELINE HEALTH
+        // ============================================
+        
+        const pipelineHealth = await db.query(`
+            SELECT 
+                follow_up_status,
+                COUNT(*) as count,
+                AVG(DATEDIFF(CURDATE(), 
+                    CASE 
+                        WHEN follow_up_status = 'NEW' THEN created_at
+                        WHEN follow_up_status = 'ASSIGNED' THEN assigned_date
+                        ELSE last_contact_date
+                    END
+                )) as avg_days_in_stage
+            FROM people
+            WHERE DATE_FORMAT(first_visit_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+            GROUP BY follow_up_status
+        `);
+        
+        const totalVisitors = pipelineHealth.reduce((sum, stage) => sum + stage.count, 0);
+        
+        metrics.pipeline_health = pipelineHealth.map(stage => ({
+            ...stage,
+            percentage: ((stage.count / totalVisitors) * 100).toFixed(0)
+        }));
+        
+        // Calculate successful contact rate
+        const contactedCount = pipelineHealth.find(s => s.follow_up_status === 'COMPLETE')?.count || 0;
+        metrics.pipeline_health.success_rate = ((contactedCount / totalVisitors) * 100).toFixed(0);
+        
+        
+        // ============================================
+        // 5. ESCALATIONS & CRISIS MANAGEMENT
+        // ============================================
+        
+        const escalations = await db.query(`
+            SELECT 
+                -- Total Escalations by Tier
+                COUNT(*) as total_escalations,
+                SUM(CASE WHEN escalation_tier = 'Standard' THEN 1 ELSE 0 END) as standard_count,
+                SUM(CASE WHEN escalation_tier = 'Urgent' THEN 1 ELSE 0 END) as urgent_count,
+                SUM(CASE WHEN escalation_tier = 'Emergency' THEN 1 ELSE 0 END) as emergency_count,
+                
+                -- Resolution Times (in days)
+                AVG(CASE WHEN escalation_tier = 'Standard' 
+                    THEN TIMESTAMPDIFF(HOUR, escalation_date, COALESCE(resolved_date, CURDATE())) / 24 
+                END) as avg_resolution_standard,
+                AVG(CASE WHEN escalation_tier = 'Urgent' 
+                    THEN TIMESTAMPDIFF(HOUR, escalation_date, COALESCE(resolved_date, CURDATE())) / 24 
+                END) as avg_resolution_urgent,
+                
+                -- Pending Escalations
+                SUM(CASE WHEN status IN ('New', 'In Progress') AND escalation_tier = 'Standard' THEN 1 ELSE 0 END) as pending_standard,
+                SUM(CASE WHEN status IN ('New', 'In Progress') AND escalation_tier = 'Urgent' THEN 1 ELSE 0 END) as pending_urgent,
+                SUM(CASE WHEN status IN ('New', 'In Progress') AND escalation_tier = 'Emergency' THEN 1 ELSE 0 END) as pending_emergency
+                
+            FROM escalations
+            WHERE DATE_FORMAT(escalation_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+        `);
+        
+        metrics.escalations = escalations[0];
+        
+        // Top Escalation Reasons
+        const topReasons = await db.query(`
+            SELECT 
+                escalation_reason,
+                COUNT(*) as count
+            FROM escalations
+            WHERE DATE_FORMAT(escalation_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+            GROUP BY escalation_reason
+            ORDER BY count DESC
+            LIMIT 5
+        `);
+        
+        metrics.escalations.top_reasons = topReasons;
+        
+        
+        // ============================================
+        // 6. TREND ANALYSIS (LAST 3 MONTHS)
+        // ============================================
+        
+        const trends = await db.query(`
+            SELECT 
+                DATE_FORMAT(month_date, '%b') as month_name,
+                
+                -- First-Time Visitors
+                (SELECT COUNT(*) FROM people 
+                 WHERE visit_type = 'First-Time Visitor'
+                   AND DATE_FORMAT(first_visit_date, '%Y-%m') = DATE_FORMAT(month_date, '%Y-%m')
+                ) as visitors,
+                
+                -- Completion Rate
+                (SELECT 
+                    (SUM(CASE WHEN contact_status = 'Contacted' THEN 1 ELSE 0 END) * 100.0 / COUNT(*))
+                 FROM follow_ups
+                 WHERE DATE_FORMAT(attempt_date, '%Y-%m') = DATE_FORMAT(month_date, '%Y-%m')
+                ) as completion_rate,
+                
+                -- System vNPS (quarterly, so same for 3 months in quarter)
+                (SELECT AVG(vnps_score) FROM vnps_surveys 
+                 WHERE quarter = CONCAT('Q', QUARTER(month_date))
+                   AND year = YEAR(month_date)
+                ) as vnps,
+                
+                -- Volunteer Count (active at end of month)
+                (SELECT COUNT(*) FROM volunteers 
+                 WHERE status = 'Active'
+                   AND start_date <= LAST_DAY(month_date)
+                   AND (end_date IS NULL OR end_date > LAST_DAY(month_date))
+                ) as volunteer_count,
+                
+                -- Crisis Cases
+                (SELECT COUNT(*) FROM escalations 
+                 WHERE escalation_tier = 'Emergency'
+                   AND DATE_FORMAT(escalation_date, '%Y-%m') = DATE_FORMAT(month_date, '%Y-%m')
+                ) as crisis_count,
+                
+                -- Volunteer Turnover
+                (SELECT COUNT(*) FROM volunteers 
+                 WHERE status = 'Exited'
+                   AND DATE_FORMAT(end_date, '%Y-%m') = DATE_FORMAT(month_date, '%Y-%m')
+                ) as turnover_count
+                
+            FROM (
+                SELECT DATE_SUB(CURDATE(), INTERVAL 2 MONTH) as month_date
+                UNION SELECT DATE_SUB(CURDATE(), INTERVAL 1 MONTH)
+                UNION SELECT CURDATE()
+            ) months
+            ORDER BY month_date
+        `);
+        
+        metrics.trends = trends;
+        
+        
+        // ============================================
+        // 7. IMPACT & OUTCOMES
+        // ============================================
+        
+        const impact = await db.query(`
+            SELECT 
+                -- Total Conversations
+                COUNT(*) as total_conversations,
+                
+                -- Connected to Small Groups (from notes/tags)
+                (SELECT COUNT(*) FROM notes 
+                 WHERE entity_type = 'Follow-Up'
+                   AND (note_text LIKE '%small group%' OR tags LIKE '%small-group%')
+                   AND DATE_FORMAT(created_at, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as small_group_connections,
+                
+                -- Prayer Requests
+                (SELECT COUNT(*) FROM people 
+                 WHERE prayer_requests IS NOT NULL AND prayer_requests != ''
+                   AND DATE_FORMAT(first_visit_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as prayer_count,
+                
+                -- Benevolence Connections
+                (SELECT COUNT(*) FROM escalations 
+                 WHERE escalation_reason = 'Financial Crisis'
+                   AND DATE_FORMAT(escalation_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as benevolence_count,
+                
+                -- Counseling Referrals
+                (SELECT COUNT(*) FROM escalations 
+                 WHERE outcome = 'Counseling Referral'
+                   AND DATE_FORMAT(escalation_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as counseling_count,
+                
+                -- Serve Team Connections
+                (SELECT COUNT(*) FROM notes 
+                 WHERE entity_type = 'Follow-Up'
+                   AND (note_text LIKE '%serving%' OR tags LIKE '%serve%')
+                   AND DATE_FORMAT(created_at, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+                ) as serve_connections
+                
+            FROM follow_ups
+            WHERE contact_status = 'Contacted'
+              AND DATE_FORMAT(attempt_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+        `);
+        
+        metrics.impact = impact[0];
+        
+        
+        // ============================================
+        // 8. VOLUNTEER DEVELOPMENT PIPELINE
+        // ============================================
+        
+        const developmentPipeline = await db.query(`
+            SELECT 
+                (SELECT COUNT(*) FROM volunteers WHERE level = 'Level 0') as level_0_count,
+                (SELECT COUNT(*) FROM volunteers WHERE level = 'Level 1' AND status = 'Active') as level_1_active,
+                (SELECT COUNT(*) FROM volunteers WHERE level = 'Level 1' AND status = 'Care Path') as level_1_care_path,
+                (SELECT COUNT(*) FROM volunteers 
+                 WHERE level = 'Level 1' 
+                   AND status = 'Active'
+                   AND DATEDIFF(CURDATE(), start_date) >= 180
+                   AND completion_rate >= 85
+                ) as promotion_ready,
+                (SELECT COUNT(*) FROM volunteers WHERE level = 'Level 2' AND status = 'Active') as level_2_count
+        `);
+        
+        metrics.development_pipeline = developmentPipeline[0];
+        
+        
+        // ============================================
+        // 9. SYSTEM ALERTS & RECOMMENDATIONS
+        // ============================================
+        
+        metrics.alerts = {
+            urgent: [],
+            important: [],
+            strategic: []
+        };
+        
+        // Urgent: Struggling Team Leads
+        const strugglingTLs = metrics.team_lead_performance.filter(tl => tl.flag === '🔴');
+        strugglingTLs.forEach(tl => {
+            metrics.alerts.urgent.push({
+                message: `${tl.team_lead_name} (Team Lead) - Below target on ${tl.below_target_count} metrics`,
+                action: 'Schedule 1-on-1 this week'
+            });
+        });
+        
+        // Important: Increasing Escalations
+        const financialEscalations = metrics.escalations.top_reasons.find(r => r.escalation_reason === 'Financial Crisis');
+        if (financialEscalations && financialEscalations.count > 8) {
+            metrics.alerts.important.push({
+                message: `Financial escalations increasing (${financialEscalations.count} cases vs avg 8)`,
+                action: 'Review benevolence fund capacity'
+            });
+        }
+        
+        // Important: Visitor Volume Growth
+        if (trends.length >= 3) {
+            const visitorGrowth = ((trends[2].visitors - trends[0].visitors) / trends[0].visitors) * 100;
+            if (visitorGrowth > 20) {
+                metrics.alerts.important.push({
+                    message: `Visitor volume +${visitorGrowth.toFixed(0)}% in 3 months`,
+                    action: 'Plan to recruit 5-8 more volunteers in Q2'
+                });
+            }
+        }
+        
+        // Strategic: Promotion-Ready Volunteers
+        if (metrics.development_pipeline.promotion_ready > 0) {
+            metrics.alerts.strategic.push({
+                message: `${metrics.development_pipeline.promotion_ready} volunteers ready for Level 2 promotion`,
+                action: 'Finalize Level 2 Prayer Ministry launch date'
+            });
+        }
+        
+        // Strategic: System Health
+        if (metrics.system_health.completion_rate_mtd >= 85 && metrics.system_health.system_vnps >= 50) {
+            metrics.alerts.strategic.push({
+                message: `System running smoothly at ${metrics.system_health.completion_rate_mtd.toFixed(0)}% completion rate`,
+                action: 'Consider expanding to additional campuses'
+            });
+        }
+        
+        
+        return metrics;
+        
+    } catch (error) {
+        console.error('Error calculating pastor dashboard metrics:', error);
+        throw error;
+    }
+}
+________________________________________
+
+
+SECTION 2: API Endpoint for Pastor Dashboard
+javascript
+// GET /api/dashboard/pastor - Pastor strategic dashboard
+router.get('/api/dashboard/pastor', async (req, res) => {
+    try {
+        const metrics = await calculatePastorDashboardMetrics();
+        res.json(metrics);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// GET /api/dashboard/pastor/export - Export to PDF/Excel
+router.get('/api/dashboard/pastor/export', async (req, res) => {
+    try {
+        const format = req.query.format || 'pdf'; // pdf or excel
+        const metrics = await calculatePastorDashboardMetrics();
+        
+        if (format === 'pdf') {
+            const pdf = await generatePastorDashboardPDF(metrics);
+            res.contentType('application/pdf');
+            res.send(pdf);
+        } else if (format === 'excel') {
+            const excel = await generatePastorDashboardExcel(metrics);
+            res.contentType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.send(excel);
+        }
+        
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+________________________________________
+SECTION 3: Automated Weekly Email to Pastor
+javascript
+// CRON JOB: Weekly Pastor Dashboard Email
+async function sendWeeklyPastorReport() {
+    try {
+        console.log('[CRON] Generating weekly pastor report...');
+        
+        const metrics = await calculatePastorDashboardMetrics();
+        
+        // Generate email body
+        const emailBody = `
+            <h1>Level 1 Follow-Up System - Weekly Report</h1>
+            
+            <h2>System Health: ${metrics.system_health.overall_flag}</h2>
+            
+            <table border="1" cellpadding="5">
+                <tr>
+                    <td><strong>Active Volunteers</strong></td>
+                    <td>${metrics.system_health.active_volunteers}</td>
+                </tr>
+                <tr>
+                    <td><strong>System vNPS</strong></td>
+                    <td>${metrics.system_health.system_vnps.toFixed(0)}</td>
+                </tr>
+                <tr>
+                    <td><strong>Completion Rate</strong></td>
+                    <td>${metrics.system_health.completion_rate_mtd.toFixed(0)}%</td>
+                </tr>
+                <tr>
+                    <td><strong>Volunteer Retention</strong></td>
+                    <td>${metrics.system_health.volunteer_retention.toFixed(0)}%</td>
+                </tr>
+            </table>
+            
+            <h2>🚨 Alerts Requiring Attention</h2>
+            
+            ${metrics.alerts.urgent.length > 0 ? `
+                <h3>URGENT (This Week):</h3>
+                <ul>
+                    ${metrics.alerts.urgent.map(alert => `
+                        <li><strong>${alert.message}</strong><br>
+                        Action: ${alert.action}</li>
+                    `).join('')}
+                </ul>
+            ` : '<p>No urgent alerts.</p>'}
+            
+            ${metrics.alerts.important.length > 0 ? `
+                <h3>IMPORTANT (This Month):</h3>
+                <ul>
+                    ${metrics.alerts.important.map(alert => `
+                        <li><strong>${alert.message}</strong><br>
+                        Action: ${alert.action}</li>
+                    `).join('')}
+                </ul>
+            ` : ''}
+            
+            <h2>📊 Key Trends</h2>
+            <ul>
+                <li>First-Time Visitors: ${metrics.trends[metrics.trends.length - 1].visitors} (${
+                    metrics.trends.length >= 2 
+                    ? (((metrics.trends[metrics.trends.length - 1].visitors - metrics.trends[0].visitors) / metrics.trends[0].visitors) * 100).toFixed(0) + '%'
+                    : '—'
+                } vs 3 months ago)</li>
+                <li>System vNPS: ${metrics.system_health.system_vnps.toFixed(0)} (${
+                    metrics.kpis.system_vnps.status === '🟢' ? 'On Target ✅' : 'Below Target ⚠️'
+                })</li>
+            </ul>
+            
+            <p><a href="${process.env.DASHBOARD_URL}/pastor">View Full Dashboard</a></p>
+        `;
+        
+        // Send email
+        await emailService.send({
+            to: process.env.SENIOR_PASTOR_EMAIL,
+            subject: `Level 1 Follow-Up System - Weekly Report (${new Date().toLocaleDateString()})`,
+            html: emailBody
+        });
+        
+        console.log('[CRON] Weekly pastor report sent successfully');
+        
+    } catch (error) {
+        console.error('[CRON ERROR] sendWeeklyPastorReport:', error);
+    }
+}
+
+// Schedule: Every Monday at 7am
+cron.schedule('0 7 * * 1', sendWeeklyPastorReport);
+________________________________________
+📊 DATABASE QUERIES REFERENCE
+Query 1: System-Wide Completion Rate
+sql
+SELECT 
+    DATE_FORMAT(attempt_date, '%Y-%m') as month,
+    COUNT(*) as total_attempts,
+    SUM(CASE WHEN contact_status = 'Contacted' THEN 1 ELSE 0 END) as successful,
+    (SUM(CASE WHEN contact_status = 'Contacted' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)) as completion_rate
+FROM follow_ups
+WHERE attempt_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+GROUP BY DATE_FORMAT(attempt_date, '%Y-%m')
+ORDER BY month;
+________________________________________
+Query 2: Team Lead Rankings
+sql
+SELECT 
+    tl.team_lead_id,
+    CONCAT(tl.first_name, ' ', tl.last_name) as name,
+    COUNT(DISTINCT v.volunteer_id) as team_size,
+    AVG(v.completion_rate) as avg_completion_rate,
+    AVG(v.vnps_score) as avg_vnps,
+    (SELECT COUNT(*) FROM volunteers 
+     WHERE team_lead = tl.team_lead_id 
+       AND status = 'Active'
+       AND start_date <= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+    ) * 100.0 / NULLIF(COUNT(DISTINCT v.volunteer_id), 0) as retention_rate
+FROM team_leads tl
+LEFT JOIN volunteers v ON tl.team_lead_id = v.team_lead AND v.status = 'Active'
+WHERE tl.status = 'Active'
+GROUP BY tl.team_lead_id
+ORDER BY avg_completion_rate DESC;
+________________________________________
+Query 3: Escalation Analysis
+sql
+SELECT 
+    escalation_reason,
+    escalation_tier,
+    COUNT(*) as count,
+    AVG(TIMESTAMPDIFF(HOUR, escalation_date, COALESCE(resolved_date, CURDATE())) / 24) as avg_resolution_days,
+    SUM(CASE WHEN status = 'Resolved' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as resolution_rate
+FROM escalations
+WHERE escalation_date >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+GROUP BY escalation_reason, escalation_tier
+ORDER BY count DESC;
+________________________________________
+Query 4: Visitor Conversion Funnel
+sql
+SELECT 
+    visit_type,
+    COUNT(*) as total_visitors,
+    SUM(CASE WHEN follow_up_status = 'COMPLETE' THEN 1 ELSE 0 END) as contacted,
+    SUM(CASE WHEN interested_in IS NOT NULL AND interested_in != '' THEN 1 ELSE 0 END) as showed_interest,
+    SUM(CASE WHEN 
+        (SELECT COUNT(*) FROM notes 
+         WHERE entity_type = 'Follow-Up' 
+           AND entity_id IN (SELECT follow_up_id FROM follow_ups WHERE person_id = people.person_id)
+           AND (tags LIKE '%small-group%' OR tags LIKE '%serve%')
+        ) > 0 
+    THEN 1 ELSE 0 END) as took_next_step
+FROM people
+WHERE first_visit_date >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH)
+GROUP BY visit_type;
+________________________________________
+🎨 FRONTEND IMPLEMENTATION (React Example)
+javascript
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+function PastorDashboard() {
+    const [metrics, setMetrics] = useState(null);
+    const [loading, setLoading] = useState(true);
+    
+    useEffect(() => {
+        fetchDashboardData();
+    }, []);
+    
+    async function fetchDashboardData() {
+        try {
+            setLoading(true);
+            const response = await axios.get('/api/dashboard/pastor');
+            setMetrics(response.data);
+            setLoading(false);
+        } catch (error) {
+            console.error('Error fetching dashboard:', error);
+            setLoading(false);
+        }
+    }
+    
+    if (loading) return <div>Loading dashboard...</div>;
+    if (!metrics) return <div>Error loading data</div>;
+    
+    return (
+        <div className="pastor-dashboard">
+            {/* System Health */}
+            <section className="system-health">
+                <h2>System Health: {metrics.system_health.overall_flag}</h2>
+                
+                <div className="stats-grid">
+                    <StatCard 
+                        label="Active Volunteers" 
+                        value={metrics.system_health.active_volunteers} 
+                    />
+                    <StatCard 
+                        label="System vNPS" 
+                        value={metrics.system_health.system_vnps.toFixed(0)} 
+                    />
+                    <StatCard 
+                        label="Completion Rate" 
+                        value={`${metrics.system_health.completion_rate_mtd.toFixed(0)}%`} 
+                    />
+                    <StatCard 
+                        label="Volunteer Retention" 
+                        value={`${metrics.system_health.volunteer_retention.toFixed(0)}%`} 
+                    />
+                </div>
+            </section>
+            
+            {/* KPIs */}
+            <section className="kpis">
+                <h2>Key Performance Indicators</h2>
+                <p>{metrics.kpis.on_target_count}/{metrics.kpis.total_count} metrics on target ✅</p>
+                
+                <table className="kpi-table">
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Current</th>
+                            <th>Target</th>
+                            <th>Status</th>
+                            <th>Trend</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Completion Rate</td>
+                            <td>{metrics.kpis.completion_rate.current.toFixed(0)}%</td>
+                            <td>≥{metrics.kpis.completion_rate.target}%</td>
+                            <td>{metrics.kpis.completion_rate.status}</td>
+                            <td>{metrics.kpis.completion_rate.trend > 0 ? '⬆️' : '⬇️'} {Math.abs(metrics.kpis.completion_rate.trend).toFixed(0)}%</td>
+                        </tr>
+                        {/* Repeat for other KPIs */}
+                    </tbody>
+                </table>
+            </section>
+            
+            {/* Team Lead Performance */}
+            <section className="team-leads">
+                <h2>Team Lead Performance Comparison</h2>
+                
+                <table className="team-lead-table">
+                    <thead>
+                        <tr>
+                            <th>Team Lead</th>
+                            <th>Team Size</th>
+                            <th>Completion</th>
+                            <th>vNPS</th>
+                            <th>Retention</th>
+                            <th>Flag</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {metrics.team_lead_performance.map(tl => (
+                            <tr key={tl.team_lead_id} className={`flag-${tl.flag}`}>
+                                <td>{tl.team_lead_name}</td>
+                                <td>{tl.team_size}</td>
+                                <td>{tl.completion_rate ? tl.completion_rate.toFixed(0) : '—'}%</td>
+                                <td>{tl.team_vnps ? tl.team_vnps.toFixed(0) : '—'}</td>
+                                <td>{tl.retention_rate ? tl.retention_rate.toFixed(0) : '—'}%</td>
+                                <td>{tl.flag}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </section>
+            
+            {/* Alerts */}
+            <section className="alerts">
+                <h2>System Alerts & Recommendations</h2>
+                
+                {metrics.alerts.urgent.length > 0 && (
+                    <div className="urgent-alerts">
+                        <h3>🚨 URGENT (This Week)</h3>
+                        <ul>
+                            {metrics.alerts.urgent.map((alert, i) => (
+                                <li key={i}>
+                                    <strong>{alert.message}</strong>
+                                    <br />→ Action: {alert.action}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+                
+                {metrics.alerts.important.length > 0 && (
+                    <div className="important-alerts">
+                        <h3>⚠️ IMPORTANT (This Month)</h3>
+                        <ul>
+                            {metrics.alerts.important.map((alert, i) => (
+                                <li key={i}>
+                                    <strong>{alert.message}</strong>
+                                    <br />→ Action: {alert.action}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+            </section>
+            
+            {/* Trends Chart */}
+            <section className="trends">
+                <h2>Trend Analysis (Last 3 Months)</h2>
+                <TrendsChart data={metrics.trends} />
+            </section>
+        </div>
+    );
+}
+
+// Helper component
+function StatCard({ label, value }) {
+    return (
+        <div className="stat-card">
+            <div className="stat-label">{label}</div>
+            <div className="stat-value">{value}</div>
+        </div>
+    );
+}
+
+export default PastorDashboard;

@@ -1,0 +1,76 @@
+2026-02-07 03:08:51 - Attempting Check-in: Array
+(
+    [volunteer_id] => 3
+    [team_lead_id] => 2
+    [emotional_tone] => 😐
+    [check_in_date] => 2026-02-07
+    [meeting_type] => In Person
+    [duration_min] => 15
+    [concerns_noted] => Feeling heavy
+    [capacity_adjustment] => 1
+    [new_capacity_band] => Balanced
+    [follow_up_needed] => 1
+    [completion_rate_discussed] => 1
+    [boundary_issues] => 1
+    [training_needs] => Please watch Triggers class again
+    [action_items] => changed Capacity band
+)
+
+2026-02-07 03:08:51 - SUCCESS
+2026-02-07 03:18:52 - Attempting Check-in: Array
+(
+    [volunteer_id] => 5
+    [team_lead_id] => 2
+    [emotional_tone] => 😐
+    [check_in_date] => 2026-02-07
+    [meeting_type] => In Person
+    [duration_min] => 15
+    [concerns_noted] => Feeling light weight but have extra work
+    [capacity_adjustment] => 1
+    [new_capacity_band] => Balanced
+    [follow_up_needed] => 1
+    [completion_rate_discussed] => 1
+    [boundary_issues] => 1
+    [training_needs] => Watch First class
+    [action_items] => Chnanging band
+)
+
+2026-02-07 03:18:53 - SUCCESS
+2026-02-10 06:31:30 - Attempting Check-in: Array
+(
+    [volunteer_id] => 1
+    [team_lead_id] => 1
+    [emotional_tone] => 😊
+    [check_in_date] => 2026-02-10
+    [meeting_type] => In Person
+    [duration_min] => 15
+    [concerns_noted] => every thing is going well
+    [capacity_adjustment] => 1
+    [new_capacity_band] => High
+    [follow_up_needed] => 0
+    [completion_rate_discussed] => 1
+    [boundary_issues] => 1
+    [training_needs] => management
+    [action_items] => 
+)
+
+2026-02-10 06:31:30 - FAILED (See PHP error log for Repo details)
+2026-02-10 06:33:13 - Attempting Check-in: Array
+(
+    [volunteer_id] => 1
+    [team_lead_id] => 1
+    [emotional_tone] => 😐
+    [check_in_date] => 2026-02-10
+    [meeting_type] => In Person
+    [duration_min] => 15
+    [concerns_noted] => 
+    [capacity_adjustment] => 1
+    [new_capacity_band] => 
+    [follow_up_needed] => 0
+    [completion_rate_discussed] => 0
+    [boundary_issues] => 0
+    [training_needs] => 
+    [action_items] => 
+)
+
+2026-02-10 06:33:14 - SUCCESS

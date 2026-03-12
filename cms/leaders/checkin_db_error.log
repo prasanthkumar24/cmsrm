@@ -1,0 +1,4 @@
+2026-02-10 06:31:30 - DB ERROR: SQLSTATE[42S02]: Base table or view not found: 1146 Table 'cms3.capacity_history' doesn't exist
+#0 C:\xampp\htdocs\rm\leaders\VolunteerRepository.php(131): PDOStatement->execute(Array)
+#1 C:\xampp\htdocs\rm\leaders\process_checkin.php(37): VolunteerRepository->createCheckIn(Array)
+#2 {main}
